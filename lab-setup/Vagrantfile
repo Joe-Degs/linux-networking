@@ -1,0 +1,88 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+$script = <<-SCRIPT
+sudo yum check-update
+sudo yum install tmux wget -y
+SCRIPT
+
+Vagrant.configure("2") do |config|
+
+  # setting up server0. This will act as the gateway to the internet for the
+  # other vms in this lab. It will have 3 network adapters - a NAT adapter and
+  # two virtual internal network adapters.
+  config.vm.box = "centos/7"
+  config.vm.box_version = "2004.01"
+
+  config.vm.define "server0" do | srv |
+    srv.vm.hostname = "server0"
+
+    # vbox configs
+    srv.vm.provider "virtualbox" do |vb|
+      vb.memory = 512
+      vb.cpus = 1
+      vb.name = "server0"
+    end
+
+    # create internal virtual networks `intnet1` and `intnet2`
+    srv.vm.provider "virtualbox" do |vb|
+      vb.customize ["modifyvm", :id, "--nic2", "intnet", "--intnet2", "intnet1"]
+    end
+    srv.vm.provider "virtualbox" do |vb|
+      vb.customize ["modifyvm", :id, "--nic3", "intnet", "--intnet3", "intnet2"]
+    end
+
+    # install the necessary tools
+    srv.vm.provision "setup-host", :type => "shell", :inline => $script do |s|
+    end
+
+    #srv.vm.provision "shell", inline: <<-SHELL
+    #  sudo su -
+    #  IFACE=$(ip route ls | awk '/^default/{print $5}')
+    #  ip addr add 192.168.1.1/24 $IFACE
+    #  systemctl restart network
+    #SHELL
+  end
+
+
+  # setup for server1
+  config.vm.box = "centos/7"
+  config.vm.box_version = "2004.01"
+
+  config.vm.define "server1" do | srv |
+    srv.vm.hostname = "server1"
+
+    # vbox configs
+    srv.vm.provider "virtualbox" do |vb|
+      vb.memory = 512
+      vb.cpus = 1
+      vb.name = "server1"
+    end
+
+    # join the `intnet1` virtual network
+    srv.vm.provider "virtualbox" do |vb|
+      vb.customize ["modifyvm", :id, "--nic2", "intnet", "--intnet2", "intnet1"]
+    end
+  end
+
+
+  # setup for server2
+  config.vm.box = "centos/7"
+  config.vm.box_version = "2004.01"
+
+  config.vm.define "server2" do | srv |
+    srv.vm.hostname = "server2"
+
+    # vbox configs
+    srv.vm.provider "virtualbox" do |vb|
+      vb.memory = 512
+      vb.cpus = 1
+      vb.name = "server2"
+    end
+
+    # join the `intnet1` virtual network
+    srv.vm.provider "virtualbox" do |vb|
+      vb.customize ["modifyvm", :id, "--nic2", "intnet", "--intnet2", "intnet2"]
+    end
+  end
+end
