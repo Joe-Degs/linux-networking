@@ -27,62 +27,26 @@ Vagrant.configure("2") do |config|
     # create internal virtual networks `intnet1` and `intnet2`
     srv.vm.provider "virtualbox" do |vb|
       vb.customize ["modifyvm", :id, "--nic2", "intnet", "--intnet2", "intnet1"]
-    end
-    srv.vm.provider "virtualbox" do |vb|
       vb.customize ["modifyvm", :id, "--nic3", "intnet", "--intnet3", "intnet2"]
     end
-
-    # install the necessary tools
-    srv.vm.provision "setup-host", :type => "shell", :inline => $script do |s|
-    end
-
-    #srv.vm.provision "shell", inline: <<-SHELL
-    #  sudo su -
-    #  IFACE=$(ip route ls | awk '/^default/{print $5}')
-    #  ip addr add 192.168.1.1/24 $IFACE
-    #  systemctl restart network
-    #SHELL
   end
 
+  (1..2).each do |i|
+    config.vm.define "server#{i}" do |box|
+      box.vm.box = "centos/7"
+      box.vm.box_version = "2004.01"
+      box.vm.hostname = "server#{i}"
 
-  # setup for server1
-  config.vm.box = "centos/7"
-  config.vm.box_version = "2004.01"
+      # vbox configs
+      box.vm.provider "virtualbox" do |vb|
+        vb.memory = 512
+        vb.cpus = 1
+        vb.name = "server#{i}"
+        vb.customize ["modifyvm", :id, "--nic2", "intnet", "--intnet2", "intnet1"]
+      end
 
-  config.vm.define "server1" do | srv |
-    srv.vm.hostname = "server1"
-
-    # vbox configs
-    srv.vm.provider "virtualbox" do |vb|
-      vb.memory = 512
-      vb.cpus = 1
-      vb.name = "server1"
-    end
-
-    # join the `intnet1` virtual network
-    srv.vm.provider "virtualbox" do |vb|
-      vb.customize ["modifyvm", :id, "--nic2", "intnet", "--intnet2", "intnet1"]
-    end
-  end
-
-
-  # setup for server2
-  config.vm.box = "centos/7"
-  config.vm.box_version = "2004.01"
-
-  config.vm.define "server2" do | srv |
-    srv.vm.hostname = "server2"
-
-    # vbox configs
-    srv.vm.provider "virtualbox" do |vb|
-      vb.memory = 512
-      vb.cpus = 1
-      vb.name = "server2"
-    end
-
-    # join the `intnet1` virtual network
-    srv.vm.provider "virtualbox" do |vb|
-      vb.customize ["modifyvm", :id, "--nic2", "intnet", "--intnet2", "intnet2"]
+      box.vm.provision "setup-hosts", :type => "shell", :path => "setup-clients.sh" do |s|
+      end
     end
   end
 end
