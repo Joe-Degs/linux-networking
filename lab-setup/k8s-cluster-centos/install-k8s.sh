@@ -19,6 +19,6 @@ mkdir -p /etc/containerd
 containerd config default > /etc/containerd/config.toml
 
 # install kubernetes
-sudo yum install -y kubelet kubeadm kubectl
+yum install -y kubelet kubeadm kubectl
 systemctl enable kubelet
 systemctl start kubelet
