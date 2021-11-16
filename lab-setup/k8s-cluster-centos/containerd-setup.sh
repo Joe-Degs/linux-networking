@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 
-# run this after running the `install-k8s.sh` file. This file contains setup necessary to
+# run this before running the `install-k8s.sh` file. This file contains setup necessary to
 # get containerd up and running well on the hosts
+
+yum install -y yum-utils
+yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+yum install -y containerd.io
+sudo mkdir -p /etc/containerd
+containerd config default | sudo tee /etc/containerd/config.toml
 
 cat <<EOF | sudo tee /etc/modules-load.d/containerd.conf
 overlay
