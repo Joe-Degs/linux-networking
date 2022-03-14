@@ -2,33 +2,13 @@
 # vi: set ft=ruby :
 
 Vagrant.configure("2") do |config|
-
-  # setting up server0. This will act as the gateway to the internet for the
-  # other vms in this lab. It will have 3 network adapters - a NAT adapter and
-  # two virtual internal network adapters.
-  config.vm.box = "centos/7"
-  config.vm.box_version = "2004.01"
-
-  config.vm.define "server0" do | srv |
-    srv.vm.hostname = "server0"
-
-    # vbox configs
-    srv.vm.provider "virtualbox" do |vb|
-      vb.memory = 512
-      vb.cpus = 1
-      vb.name = "server0"
-    end
-
-    # create internal virtual networks `intnet1` and `intnet2`
-    srv.vm.provider "virtualbox" do |vb|
-      vb.customize ["modifyvm", :id, "--nic2", "intnet", "--intnet2", "intnet1"]
-    end
-  end
+  config.vm.box = "ubuntu/bionic64"
 
   # inline provisioner script
   script = <<-SCRIPT
-    sudo yum check-update
-    sudo yum install tmux wget nano -y
+    sudo apt-get update
+    sudo apt-get install curl tmux wget nano git -y
+    sudo swapoff -a
     mkdir -p ~/k8s && cd ~/k8s
     wget -q \
        https://pkg.cfssl.org/R1.2/cfssl_linux-amd64 \
@@ -39,16 +19,36 @@ Vagrant.configure("2") do |config|
     sudo mv cfssljson_linux-amd64 /usr/local/bin/cfssljson
   SCRIPT
 
-  (1..2).each do |i|
-    config.vm.define "server#{i}" do |box|
-      box.vm.box = "centos/7"
-      box.vm.box_version = "2004.01"
-      box.vm.hostname = "server#{i}"
+  # setting master nodes
+  (0..2).each do |i|
+    config.vm.define "master#{i}" do | srv |
+      srv.vm.hostname = "master#{1}"
+
+      # vbox configs
+      srv.vm.provider "virtualbox" do |vb|
+        vb.memory = 4096
+        vb.cpus = 4
+        vb.name = "master#{i}"
+      end
+
+      # create internal virtual networks `intnet1` and `intnet2`
+      srv.vm.provider "virtualbox" do |vb|
+        vb.customize ["modifyvm", :id, "--nic2", "intnet", "--intnet2", "intnet1"]
+      end
+
+      srv.vm.provision "shell", inline: "#{script}"
+    end
+  end
+
+  # worker nodes
+  (0..5).each do |i|
+    config.vm.define "worker#{i}" do |box|
+      box.vm.hostname = "worker#{i}"
 
       box.vm.provider "virtualbox" do |vb|
-        vb.memory = 512
-        vb.cpus = 1
-        vb.name = "server#{i}"
+        vb.memory = 1024
+        vb.cpus = 2
+        vb.name = "worker#{i}"
         vb.customize ["modifyvm", :id, "--nic2", "intnet", "--intnet2", "intnet1"]
       end
 
