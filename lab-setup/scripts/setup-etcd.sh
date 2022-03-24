@@ -7,33 +7,6 @@ get_ip(){
     grep $1 $SHARED_DIR/scripts/hostips.sh | awk '{print $1}'
 }
 
-init_haproxy(){
-    sudo apt-get install -y haproxy
-    
-    cat >> /etc/haproxy/haproxy.cfg <<EOF
-global
-default
-frontend kubernetes
-bind 0.0.0.0:6443
-option tcplog
-mode tcp
-default_backend kubernetes-master-nodes
-
-
-backend kubernetes-master-nodes
-mode tcp
-balance roundrobin
-option tcp-check
-server master0 $(get_ip master0):6443 check fall 3 rise 2
-server master1 $(get_ip master1):6443 check fall 3 rise 2
-server master2 $(get_ip master2):6443 check fall 3 rise 2
-EOF
-
-    systemctl restart haproxy
-}
-
-[[ "$(hostname)" == "master0" ]] && init_haproxy
-
 SHARED_DIR="/vagrant"
 CERTS_DIR="$SHARED_DIR/certs"
 
