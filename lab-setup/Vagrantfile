@@ -19,6 +19,25 @@ Vagrant.configure("2") do |config|
     sudo mv cfssljson_linux-amd64 /usr/local/bin/cfssljson
   SCRIPT
 
+  # setup gateway and loadbalancer
+  config.vm.define "gateway" do |srv|
+    srv.vm.hostname = "gateway"
+    srv.vm.provider "virtualbox" do |vbox|
+      vbox.name = "gateway"
+      vbox.memory = 1024
+      vbox.cpus = 2
+      vbox.customize ["modifyvm", :id, "--nic2", "intnet", "--intnet2", "intnet1"]
+    end
+    srv.vm.provision "shell", inline: <<-SHELL
+      sudo apt-get update
+      sudo apt-get install curl tmux wget nano git -y
+      sudo swapoff -a
+      sudo /vagrant/scripts/hostips.sh
+      sudo /vagrant/scripts/netconfig.sh
+      sudo /vagrant/scripts/setup-haproxy.sh
+    SHELL
+  end
+
   # setting master nodes
   (0..2).each do |i|
     config.vm.define "master#{i}" do | srv |
