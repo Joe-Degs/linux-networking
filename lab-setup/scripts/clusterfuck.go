@@ -25,9 +25,10 @@ type node_type uint8
 
 const (
 	UNDEFINED node_type = iota
-	ALL                 // represents all nodes in the cluster
+	ALL                 // rall masters and controllers in the cluster
 	MASTER
 	WORKER
+	GATEWAY
 )
 
 // machine holds the hostname and files representing stdin, stdout and stdout of
@@ -126,6 +127,7 @@ var (
 	allnodes    bool
 	masters     bool
 	workers     bool
+	vm          string
 	single      string
 	script_name string
 	cmd         string
@@ -137,13 +139,21 @@ var (
 		mach("master0", MASTER), mach("master1", MASTER), mach("master2", MASTER),
 		mach("worker0", WORKER), mach("worker1", WORKER), mach("worker2", WORKER),
 		mach("worker3", WORKER), mach("worker4", WORKER), mach("worker5", WORKER),
+		mach("gateway", GATEWAY),
 	}
 )
 
+func makeCmd(command string, streams *std_stream, args ...string) *exec.Cmd {
+	cmd := exec.Command(command, args...)
+	cmd.Stdin = streams.in
+	cmd.Stdout = streams.out
+	cmd.Stderr = streams.err
+	return cmd
+}
+
 // prepare and ssh into specified machine
 func ssh(mach machine, args ...string) error {
-	cmd := exec.Command("ssh", append([]string{mach.name}, args...)...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = mach.streams.in, mach.streams.out, mach.streams.err
+	cmd := makeCmd("ssh", mach.streams, append([]string{mach.name}, args...)...)
 	if debug {
 		fmt.Println("\t ** Executing command in node.. " + mach.String())
 	}
@@ -153,19 +163,96 @@ func ssh(mach machine, args ...string) error {
 	return cmd.Run()
 }
 
+//go:generate stringer -type=Op
+type Op uint8
+
+const (
+	START Op = iota
+	STOP
+	PAUSE
+	RESUME
+	SAVESTATE
+	RESET
+	ACPIPOWEROFF
+	NOP
+)
+
+func vbox(m machine, op string) error {
+	var args []string
+
+	makeArg := func(args ...string) []string {
+		return append([]string{}, args...)
+	}
+
+	switch getOp(op) {
+	case START:
+		args = makeArg("startvm", m.name, "--type", "headless")
+	case STOP:
+		args = makeArg("controlvm", m.name, "poweroff")
+	case SAVESTATE:
+		args = makeArg("controlvm", m.name, "savestate")
+	case PAUSE:
+		args = makeArg("controlvm", m.name, "pause")
+	case RESUME:
+		args = makeArg("controlvm", m.name, "resume")
+	case ACPIPOWEROFF:
+		args = makeArg("controlvm", m.name, "acpipowerbutton")
+	case RESET:
+		args = makeArg("controlvm", m.name, "reset")
+	default:
+		log.Fatal(op, " not supported")
+	}
+
+	// fmt.Println(args)
+	cmd := makeCmd("VBoxManage", m.streams, args...)
+	return cmd.Run()
+}
+
+func getOp(op string) Op {
+	switch op {
+	case "start":
+		return START
+	case "stop":
+		return STOP
+	case "pause":
+		return PAUSE
+	case "resume":
+		return RESUME
+	case "reset":
+		return RESET
+	case "savestate":
+		return SAVESTATE
+	case "acpipoweroff":
+		return ACPIPOWEROFF
+	}
+	return NOP
+}
+
 // part of the script in the virtual machine
 func script_path(name string) string {
 	return "/vagrant/" + name
 }
 
-// execute's script/command con specified machine types
-func exec_on(kind node_type, script string) {
+type Cmd uint8
+
+const (
+	SSH Cmd = iota
+	VBOX
+)
+
+// execute's script/command on specified machine types
+func exec_on(kind node_type, c Cmd, args string) {
 	for _, node := range cluster {
 		if node.kind == kind || kind == ALL {
 			wg.Add(1)
 			go func(node machine) {
 				defer wg.Done()
-				ssh(node, script)
+				switch c {
+				case SSH:
+					ssh(node, args)
+				case VBOX:
+					vbox(node, args)
+				}
 			}(node)
 		}
 	}
@@ -173,18 +260,18 @@ func exec_on(kind node_type, script string) {
 }
 
 // execute script/command on master nodes
-func exec_on_masters(script string) {
-	exec_on(MASTER, script)
+func exec_on_masters(cmd Cmd, arg string) {
+	exec_on(MASTER, cmd, arg)
 }
 
 // execute script/command on worker nodes
-func exec_on_workers(script string) {
-	exec_on(WORKER, script)
+func exec_on_workers(cmd Cmd, arg string) {
+	exec_on(WORKER, cmd, arg)
 }
 
 // execute script/command on all nodes
-func exec_on_all(script string) {
-	exec_on(ALL, script)
+func exec_on_all(cmd Cmd, arg string) {
+	exec_on(ALL, cmd, arg)
 }
 
 func find_machine(name string) machine {
@@ -220,6 +307,7 @@ func main() {
 	flag.BoolVar(&allnodes, "all", false, "perform operation on all nodes in cluster")
 	flag.BoolVar(&workers, "workers", false, "perform operation on nodes designated masters in cluster")
 	flag.BoolVar(&masters, "masters", false, "perform operation on nodes designated workers in cluster")
+	flag.StringVar(&vm, "vm", "", "specify vboxmanage command for vms in cluster")
 	flag.StringVar(&single, "single", "", "specify a single remote host on which to run script or command")
 	flag.StringVar(&script_name, "script", "", "specify path of script to run on remote host's shell\nthe script must be in the shared vagrant directory and relative to it")
 	flag.StringVar(&cmd, "cmd", "", "specify a command to run on the remote host's shell")
@@ -231,6 +319,22 @@ func main() {
 	// read stdout and stdout of machines
 	if list != "" {
 		read_std_streams(list)
+	}
+
+	// run vboxmanage operation
+	if vm != "" {
+		if single != "" {
+			vbox(mach(single, UNDEFINED), vm)
+			return
+		}
+		if allnodes {
+			exec_on_all(VBOX, vm)
+		} else if masters {
+			exec_on_masters(VBOX, vm)
+		} else if workers {
+			exec_on_workers(VBOX, vm)
+		}
+		return
 	}
 
 	// connect stdout and stderr to terminal
@@ -249,11 +353,11 @@ func main() {
 			return
 		}
 		if allnodes {
-			exec_on_all(script_path(script_name))
+			exec_on_all(SSH, script_path(script_name))
 		} else if masters {
-			exec_on_masters(script_path(script_name))
+			exec_on_masters(SSH, script_path(script_name))
 		} else if workers {
-			exec_on_workers(script_path(script_name))
+			exec_on_workers(SSH, script_path(script_name))
 		}
 	}
 
@@ -265,11 +369,11 @@ func main() {
 		}
 
 		if allnodes {
-			exec_on_all(cmd)
+			exec_on_all(SSH, cmd)
 		} else if masters {
-			exec_on_masters(cmd)
+			exec_on_masters(SSH, cmd)
 		} else if workers {
-			exec_on_workers(cmd)
+			exec_on_workers(SSH, cmd)
 		}
 	}
 }
