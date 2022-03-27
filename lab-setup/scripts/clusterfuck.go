@@ -85,8 +85,8 @@ func new_streams(hostname string) *std_stream {
 // dummy makes an io.Writer an io.ReadWriteCloser
 type dummy struct{ w io.Writer }
 
-func (d dummy) Close() error                { return nil }
-func (d dummy) Read(p []byte) (int, error)  { return 0, nil }
+func (dummy) Close() error                  { return nil }
+func (dummy) Read(p []byte) (int, error)    { return 0, nil }
 func (d dummy) Write(p []byte) (int, error) { return d.w.Write(p) }
 
 // connect machine's stdout file to the terminal stdout
@@ -135,12 +135,7 @@ var (
 	list        string
 
 	// cluster contains all vagrant virtual machines in the cluster
-	cluster = []machine{
-		mach("master0", MASTER), mach("master1", MASTER), mach("master2", MASTER),
-		mach("worker0", WORKER), mach("worker1", WORKER), mach("worker2", WORKER),
-		mach("worker3", WORKER), mach("worker4", WORKER), mach("worker5", WORKER),
-		mach("gateway", GATEWAY),
-	}
+	cluster []machine
 )
 
 func makeCmd(command string, streams *std_stream, args ...string) *exec.Cmd {
@@ -286,7 +281,7 @@ func find_machine(name string) machine {
 // TODO(Joe-Degs):
 // this whole reading the file things does not work. probably stop
 // doing it
-func print(m machine) {
+func printStdout(m machine) {
 	stdout := open_stream(shared_directory+"\\outputs\\", m.name+"\\stdout")
 	io.Copy(os.Stdout, stdout)
 }
@@ -297,7 +292,7 @@ func read_std_streams(machs string) {
 		mach := find_machine(m)
 		if mach.name != "" {
 			fmt.Println("found machine " + mach.String())
-			print(mach)
+			printStdout(mach)
 		}
 	}
 }
@@ -319,7 +314,15 @@ func main() {
 	// read stdout and stdout of machines
 	if list != "" {
 		read_std_streams(list)
+		return
 	}
+
+	cluster = append(cluster, []machine{
+		mach("master0", MASTER), mach("master1", MASTER), mach("master2", MASTER),
+		mach("worker0", WORKER), mach("worker1", WORKER), mach("worker2", WORKER),
+		mach("worker3", WORKER), mach("worker4", WORKER), mach("worker5", WORKER),
+		mach("gateway", GATEWAY),
+	}...)
 
 	// run vboxmanage operation
 	if vm != "" {
