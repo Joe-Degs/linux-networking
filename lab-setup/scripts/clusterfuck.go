@@ -20,7 +20,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.comn/mikkeloscar/sshconfig"
+	"github.com/mikkeloscar/sshconfig"
 )
 
 // node_type represents the role of node a node in the cluster or
@@ -45,7 +45,7 @@ type machine struct {
 	name    string
 	kind    node_type
 	streams *std_stream
-	host    *sshconfig.SSHHost
+	config  *sshconfig.SSHHost
 }
 
 type std_stream struct {
@@ -167,16 +167,23 @@ func (m machine) String() string {
 }
 
 // create a new node machine
-func mach(hostname string, hosttype node_type) machine {
-	return machine{
-		hostname,
-		hosttype,
-		new_streams(hostname),
+func mach(hostname string, hosttype node_type) *machine {
+	return &machine{
+		name:    hostname,
+		kind:    hosttype,
+		streams: new_streams(hostname),
 	}
 }
 
-func machine_from_sshconfig(host *sshconfig.SSHHost) machine {
-	return machine{}
+func sshconfig_cluster(hosts []*sshconfig.SSHHost) {
+	for _, h := range hosts {
+		m := &machine{
+			name:   h.Host[0],
+			kind:   UNDEFINED,
+			config: h,
+		}
+		cluster = append(cluster, m)
+	}
 }
 
 func makeCmd(command string, streams *std_stream, args ...string) *exec.Cmd {
@@ -188,7 +195,7 @@ func makeCmd(command string, streams *std_stream, args ...string) *exec.Cmd {
 }
 
 // prepare and ssh into specified machine
-func ssh(mach machine, args ...string) error {
+func ssh(mach *machine, args ...string) error {
 	cmd := makeCmd("ssh", mach.streams, append([]string{mach.name}, args...)...)
 	if debug {
 		fmt.Println("\t ** Executing command in node.. " + mach.String())
@@ -213,7 +220,7 @@ const (
 	NOP
 )
 
-func vbox(m machine, op string) error {
+func vbox(m *machine, op string) error {
 	var args []string
 
 	makeArg := func(args ...string) []string {
@@ -269,6 +276,33 @@ func script_path(name string) string {
 	return "/vagrant/" + name
 }
 
+// A command is a command that can be executed
+type Command interface {
+	// run the command
+	Run() error
+
+	// display help and quit the program
+	Help()
+}
+
+// the list command type. it lists things right
+type List struct {
+	args string
+}
+
+func ListCommand(args string) List {
+	return List{args: args}
+}
+
+func (l List) Run() error {
+	fmt.Println(l.args)
+	return nil
+}
+
+func (l List) Help() {
+	log.Fatal("list command help!")
+}
+
 type Cmd uint8
 
 const (
@@ -281,7 +315,7 @@ func exec_on(kind node_type, c Cmd, args string) {
 	for _, node := range cluster {
 		if node.kind == kind || kind == ALL {
 			wg.Add(1)
-			go func(node machine) {
+			go func(node *machine) {
 				defer wg.Done()
 				switch c {
 				case SSH:
@@ -310,32 +344,13 @@ func exec_on_all(cmd Cmd, arg string) {
 	exec_on(ALL, cmd, arg)
 }
 
-func find_machine(name string) machine {
+func find_machine(name string) *machine {
 	for _, m := range cluster {
 		if m.name == name {
 			return m
 		}
 	}
-	return machine{}
-}
-
-// TODO(Joe-Degs):
-// this whole reading the file things does not work. probably stop
-// doing it
-func printStdout(m machine) {
-	stdout := open_stream(out_dir, filepath.Join(m.name, "stdout"))
-	io.Copy(os.Stdout, stdout)
-}
-
-func read_std_streams(machs string) {
-	ms := strings.Split(machs, ",")
-	for _, m := range ms {
-		mach := find_machine(m)
-		if mach.name != "" {
-			fmt.Println("found machine " + mach.String())
-			printStdout(mach)
-		}
-	}
+	return nil
 }
 
 func get_ssh_config() string {
@@ -373,7 +388,7 @@ var (
 	list        string
 
 	// cluster contains all vagrant virtual machines in the cluster
-	cluster []machine
+	cluster []*machine
 )
 
 func main() {
@@ -392,6 +407,24 @@ func main() {
 	flag.StringVar(&ssh_config, "ssh_config", "", "specify path to openssh config file")
 
 	flag.Parse()
+
+	// get the ssh config
+	if ssh_config == "" {
+		ssh_config = get_ssh_config()
+	}
+
+	// parse the ssh config file
+	hosts := sshconfig.MustParse(ssh_config)
+	sshconfig_cluster(hosts)
+
+	// do the list command
+	if list != "" {
+		l := ListCommand(list)
+		if err := l.Run(); err != nil {
+			l.Help()
+		}
+		os.Exit(0)
+	}
 
 	var err error
 	if shared_dir == "" {
@@ -414,24 +447,6 @@ func main() {
 			}
 		}
 	}
-
-	if ssh_config == "" {
-		ssh_config = get_ssh_config()
-	}
-	log.Fatal(ssh_config)
-
-	// read stdout and stdout of machines
-	if list != "" {
-		read_std_streams(list)
-		return
-	}
-
-	// cluster = append(cluster, []machine{
-	// 	mach("master0", MASTER), mach("master1", MASTER), mach("master2", MASTER),
-	// 	mach("worker0", WORKER), mach("worker1", WORKER), mach("worker2", WORKER),
-	// 	mach("worker3", WORKER), mach("worker4", WORKER), mach("worker5", WORKER),
-	// 	mach("gateway", GATEWAY),
-	// }...)
 
 	// run vboxmanage operation
 	if vm != "" {
