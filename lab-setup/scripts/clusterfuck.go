@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,17 +18,112 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
+	"github.com/DavidGamba/go-getoptions"
 	"github.com/mikkeloscar/sshconfig"
 )
 
-// node_type represents the role of node a node in the cluster or
-// it identifies what types of nodes to perform an operation on
-//go:generate stringer -type=node_type
-type node_type uint8
+type (
+	// node_type represents the role of node a node in the cluster or
+	// it identifies what types of nodes to perform an operation on
+	//go:generate stringer -type=node_type
+	node_type uint8
 
+	// machine holds the hostname and files representing stdin, stdout and stdout of
+	// a remote host in the cluster. This is done because writing the the std's
+	// concurrently fucks up my terminal. The name of the machine should also be
+	// in the .ssh/config file of your host, because it's used to ssh into the
+	// remote host
+	machine struct {
+		name    string
+		kind    node_type
+		streams *std_stream
+		config  *sshconfig.SSHHost
+	}
+
+	std_stream struct {
+		connected    bool
+		stdout       io.Reader
+		in, out, err io.ReadWriteCloser
+	}
+
+	// dummy makes an io.Writer an io.ReadWriteCloser
+	dummy struct{ w io.Writer }
+
+	//go:generate stringer -type=Op
+	Op uint8
+
+	// A command is a command that can be executed
+	Command interface {
+		// run the command
+		Run(args []string) error
+
+		// display help and quit the program
+		Help()
+	}
+
+	// the list command type. it lists things right
+	List struct {
+		args string
+	}
+
+	// vbox command options
+	Opts struct {
+		Connect string
+		Type    string
+		Script  string
+		Command string
+		Name    string
+	}
+
+	// vboxmanage command executor
+	SshCmd struct {
+		opt  *getoptions.GetOpt
+		opts *Opts
+	}
+
+	// ssh command executor
+	VboxCmd struct {
+		opt  *getoptions.GetOpt
+		opts *Opts
+	}
+
+	CmdLineCmd struct {
+		keys  []string
+		funcs map[string]func([]string) error
+	}
+
+	Cmd uint8
+)
+
+func (c *CmdLineCmd) register(key string, val Command) {
+	c.keys = append(c.keys, key)
+	c.funcs[key] = val.Run
+}
+
+func (c *CmdLineCmd) register_func(key string, val func()) {
+	f := func(_ []string) error {
+		val()
+		return nil
+	}
+	c.keys = append(c.keys, key)
+	c.funcs[key] = f
+}
+
+func (c *CmdLineCmd) Help() {
+	fmt.Printf("Commands: %s\n", strings.Join(c.keys, " "))
+	fmt.Printf("'cmd help' for help for specific command\n")
+}
+
+func (c *CmdLineCmd) get(key string) (func([]string) error, bool) {
+	f, ok := c.funcs[key]
+	return f, ok
+}
+
+// node types
 const (
 	UNDEFINED node_type = iota
 	ALL                 // rall masters and controllers in the cluster
@@ -36,23 +132,28 @@ const (
 	GATEWAY
 )
 
-// machine holds the hostname and files representing stdin, stdout and stdout of
-// a remote host in the cluster. This is done because writing the the std's
-// concurrently fucks up my terminal. The name of the machine should also be
-// in the .ssh/config file of your host, because it's used to ssh into the
-// remote host
-type machine struct {
-	name    string
-	kind    node_type
-	streams *std_stream
-	config  *sshconfig.SSHHost
-}
+// vboxmanage commands
+const (
+	START Op = iota
+	STOP
+	PAUSE
+	RESUME
+	SAVESTATE
+	RESET
+	ACPIPOWEROFF
+	NOP
+)
 
-type std_stream struct {
-	connected    bool
-	stdout       io.Reader
-	in, out, err io.ReadWriteCloser
-}
+// types of commands to execute. might not need this for too long as a better
+// way is making its way out of my guts
+const (
+	SSH Cmd = iota
+	VBOX
+)
+
+func (dummy) Close() error                  { return nil }
+func (dummy) Read(p []byte) (int, error)    { return 0, nil }
+func (d dummy) Write(p []byte) (int, error) { return d.w.Write(p) }
 
 func split_path(path string) []string {
 	return strings.Split(path, string(filepath.Separator))
@@ -141,13 +242,6 @@ func new_streams(hostname string) *std_stream {
 	return s
 }
 
-// dummy makes an io.Writer an io.ReadWriteCloser
-type dummy struct{ w io.Writer }
-
-func (dummy) Close() error                  { return nil }
-func (dummy) Read(p []byte) (int, error)    { return 0, nil }
-func (d dummy) Write(p []byte) (int, error) { return d.w.Write(p) }
-
 // connect machine's stdout file to the terminal stdout
 func (s *std_stream) StreamOut() {
 	r, w := io.Pipe()
@@ -206,20 +300,6 @@ func ssh(mach *machine, args ...string) error {
 	return cmd.Run()
 }
 
-//go:generate stringer -type=Op
-type Op uint8
-
-const (
-	START Op = iota
-	STOP
-	PAUSE
-	RESUME
-	SAVESTATE
-	RESET
-	ACPIPOWEROFF
-	NOP
-)
-
 func vbox(m *machine, op string) error {
 	var args []string
 
@@ -276,20 +356,6 @@ func script_path(name string) string {
 	return "/vagrant/" + name
 }
 
-// A command is a command that can be executed
-type Command interface {
-	// run the command
-	Run() error
-
-	// display help and quit the program
-	Help()
-}
-
-// the list command type. it lists things right
-type List struct {
-	args string
-}
-
 func ListCommand(args string) List {
 	return List{args: args}
 }
@@ -302,13 +368,6 @@ func (l List) Run() error {
 func (l List) Help() {
 	log.Fatal("list command help!")
 }
-
-type Cmd uint8
-
-const (
-	SSH Cmd = iota
-	VBOX
-)
 
 // execute's script/command on specified machine types
 func exec_on(kind node_type, c Cmd, args string) {
@@ -374,41 +433,148 @@ var (
 
 	// ssh config
 	ssh_config string
-
-	// command line argument variables
-	debug       bool
-	allnodes    bool
-	masters     bool
-	workers     bool
-	vm          string
-	single      string
-	script_name string
-	cmd         string
-	connect     string
-	list        string
+	debug      bool
+	list       string
 
 	// cluster contains all vagrant virtual machines in the cluster
 	cluster []*machine
+
+	// all the commands supported
+	commands = &CmdLineCmd{funcs: make(map[string]func([]string) error)}
 )
+
+func (o *Opts) Clear() {
+	o.Type = ""
+	o.Command = ""
+	o.Script = ""
+	o.Connect = ""
+}
+
+func New(cmd Command) Command {
+	var opts Opts
+	opt := getoptions.New()
+
+	opt.Bool("help", false, opt.Alias("h", "?"))
+
+	opt.StringVar(&opts.Connect, "connect", "", opt.Alias("c"), opt.Description("connect machine stderr and stdout to terminal"))
+	opt.StringVar(&opts.Type, "type", "", opt.Alias("t"), opt.Description("specify type of machine to run script or command on"))
+	opt.StringVar(&opts.Script, "script", "", opt.Alias("s"), opt.Description("specify script the script to run"))
+	opt.StringVar(&opts.Command, "command", "", opt.Alias("cmd"), opt.Description("specify command the script to run"))
+	opt.StringVar(&opts.Name, "name", "", opt.Alias("n"), opt.Description("specify machine when executing on single machine"))
+
+	switch cmd.(type) {
+	case *SshCmd:
+		return &SshCmd{
+			opts: &opts,
+			opt:  opt,
+		}
+	case *VboxCmd:
+		return &VboxCmd{
+			opts: &opts,
+			opt:  opt,
+		}
+	}
+	return nil
+}
+
+func (v *VboxCmd) Help() {
+	return
+}
+
+func (v *SshCmd) Help() {
+	return
+}
+
+func (v *VboxCmd) Run(args []string) error {
+	v.opts.Clear()
+	largs, err := v.opt.Parse(args)
+	if err != nil {
+		return err
+	}
+
+	if v.opt.Called("help") {
+		fmt.Fprintln(os.Stderr, v.opt.Help())
+		os.Exit(1)
+	}
+
+	vm := strings.Join(largs, " ")
+	log.Println(vm)
+
+	if v.opts.Type == "" {
+		vbox(find_machine(v.opts.Name), vm)
+	} else if v.opts.Type == "all" {
+		exec_on_all(VBOX, vm)
+	} else if v.opts.Type == "master" {
+		exec_on_masters(VBOX, vm)
+	} else if v.opts.Type == "worker" {
+		exec_on_workers(VBOX, vm)
+	}
+
+	return nil
+}
+
+func (v *SshCmd) Run(args []string) error {
+	v.opts.Clear()
+	if _, err := v.opt.Parse(args); err != nil {
+		return err
+	}
+
+	if v.opt.Called("help") {
+		fmt.Fprintln(os.Stderr, v.opt.Help())
+		os.Exit(1)
+	}
+
+	// connect stdout and stderr to terminal
+	if v.opts.Connect != "" {
+		m := find_machine(v.opts.Connect)
+		if m.name != "" {
+			fmt.Println("\n\t** Streaming from.. " + m.String() + "\n")
+			m.streams.StreamOut()
+		}
+	}
+
+	// execute a script
+	if v.opts.Script != "" {
+		if v.opts.Type == "" {
+			ssh(find_machine(v.opts.Name), script_path(v.opts.Script))
+		} else if v.opts.Type == "all" {
+			exec_on_all(SSH, script_path(v.opts.Script))
+		} else if v.opts.Type == "master" {
+			exec_on_masters(SSH, script_path(v.opts.Script))
+		} else if v.opts.Type == "workers" {
+			exec_on_workers(SSH, script_path(v.opts.Script))
+		}
+	}
+
+	// execute a command or set of commands
+	if v.opts.Command != "" {
+		if v.opts.Type != "" {
+			ssh(find_machine(v.opts.Name), v.opts.Command)
+			return nil
+		}
+
+		if v.opts.Type == "all" {
+			exec_on_all(SSH, v.opts.Command)
+		} else if v.opts.Type == "master" {
+			exec_on_masters(SSH, v.opts.Command)
+		} else if v.opts.Type == "workers" {
+			exec_on_workers(SSH, v.opts.Command)
+		}
+	}
+
+	return nil
+}
 
 func main() {
 	flag.BoolVar(&debug, "v", false, "verbose output")
-	flag.BoolVar(&allnodes, "all", false, "perform operation on all nodes in cluster")
-	flag.BoolVar(&workers, "workers", false, "perform operation on nodes designated workers in cluster")
-	flag.BoolVar(&masters, "masters", false, "perform operation on nodes designated masters in cluster")
-	flag.StringVar(&vm, "vm", "", "specify vboxmanage command for vms in cluster")
-	flag.StringVar(&single, "single", "", "specify a single remote host on which to run script or command")
-	flag.StringVar(&script_name, "script", "", "specify path of script to run on remote host's shell\nthe script must be in the shared vagrant directory and relative to it")
-	flag.StringVar(&cmd, "cmd", "", "specify a command to run on the remote host's shell")
-	flag.StringVar(&connect, "c", "", "connect a machines stderr and stdout to terminal")
-	flag.StringVar(&list, "l", "", "specify comma separated list of nodes to read stdout and stderr to terminal")
-	flag.StringVar(&shared_dir, "s", "", "specify the path of the vagrant directory")
-	flag.StringVar(&out_dir, "o", "", "specify path of output streams of remote host machines")
-	flag.StringVar(&ssh_config, "ssh_config", "", "specify path to openssh config file")
+	flag.StringVar(&list, "list", "", "specify comma separated list of nodes to read stdout and stderr to terminal")
+	flag.StringVar(&shared_dir, "shared", "", "specify the path of the vagrant directory")
+	flag.StringVar(&out_dir, "output", "", "specify path of output streams of remote host machines")
+	flag.StringVar(&ssh_config, "sshconfig", "", "specify path to openssh config file")
 
 	flag.Parse()
 
-	// get the ssh config
+	// get ssh config path
 	if ssh_config == "" {
 		ssh_config = get_ssh_config()
 	}
@@ -416,15 +582,6 @@ func main() {
 	// parse the ssh config file
 	hosts := sshconfig.MustParse(ssh_config)
 	sshconfig_cluster(hosts)
-
-	// do the list command
-	if list != "" {
-		l := ListCommand(list)
-		if err := l.Run(); err != nil {
-			l.Help()
-		}
-		os.Exit(0)
-	}
 
 	var err error
 	if shared_dir == "" {
@@ -448,59 +605,47 @@ func main() {
 		}
 	}
 
-	// run vboxmanage operation
-	if vm != "" {
-		if single != "" {
-			vbox(mach(single, UNDEFINED), vm)
-			return
+	prompt := func() {
+		fmt.Print(os.Args[0], "> ")
+	}
+
+	clear := func() {
+		var cmd string
+		if runtime.GOOS == "windows" {
+			cmd = "cls"
+		} else if runtime.GOOS == "linux" {
+			cmd = "clear"
 		}
-		if allnodes {
-			exec_on_all(VBOX, vm)
-		} else if masters {
-			exec_on_masters(VBOX, vm)
-		} else if workers {
-			exec_on_workers(VBOX, vm)
+		log.Println("execing... ", cmd)
+		c := exec.Command(cmd)
+		c.Stdout = os.Stdout
+		c.Run()
+	}
+
+	get_args := func(s string) (cmd string, args []string) {
+		out := strings.Split(strings.TrimSpace(strings.ToLower(s)), " ")
+		cmd = out[0]
+		if len(cmd) >= 1 {
+			args = out[1:]
 		}
 		return
 	}
 
-	// connect stdout and stderr to terminal
-	if connect != "" {
-		m := find_machine(connect)
-		if m.name != "" {
-			fmt.Println("\n\t** Streaming from.. " + m.String() + "\n")
-			m.streams.StreamOut()
-		}
-	}
+	commands.register_func("clear", clear)
+	commands.register_func("help", commands.Help)
+	commands.register_func("quit", clear)
+	commands.register("ssh", New(&SshCmd{}))
+	commands.register("vbox", New(&VboxCmd{}))
 
-	// execute a script
-	if script_name != "" {
-		if single != "" {
-			ssh(mach(single, UNDEFINED), script_path(script_name))
-			return
+	cmdline := bufio.NewScanner(os.Stdin)
+	prompt()
+	for cmdline.Scan() {
+		cmd, args := get_args(cmdline.Text())
+		if f, ok := commands.get(cmd); ok {
+			if err := f(args); err != nil {
+				log.Fatal(err)
+			}
 		}
-		if allnodes {
-			exec_on_all(SSH, script_path(script_name))
-		} else if masters {
-			exec_on_masters(SSH, script_path(script_name))
-		} else if workers {
-			exec_on_workers(SSH, script_path(script_name))
-		}
-	}
-
-	// execute a command or set of commands
-	if cmd != "" {
-		if single != "" {
-			ssh(mach(single, UNDEFINED), cmd)
-			return
-		}
-
-		if allnodes {
-			exec_on_all(SSH, cmd)
-		} else if masters {
-			exec_on_masters(SSH, cmd)
-		} else if workers {
-			exec_on_workers(SSH, cmd)
-		}
+		prompt()
 	}
 }
