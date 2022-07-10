@@ -62,7 +62,7 @@ type (
 		Run(args []string) error
 
 		// display help and quit the program
-		Help()
+		Help() string
 	}
 
 	// the list command type. it lists things right
@@ -92,30 +92,51 @@ type (
 	}
 
 	CmdLineCmd struct {
-		keys  []string
+		help  map[string]interface{}
 		funcs map[string]func([]string) error
 	}
 
 	Cmd uint8
 )
 
-func (c *CmdLineCmd) register(key string, val Command) {
-	c.keys = append(c.keys, key)
-	c.funcs[key] = val.Run
+func (c *CmdLineCmd) regs(key string, val func([]string) error, desc interface{}) {
+	c.help[key] = desc
+	c.funcs[key] = val
 }
 
-func (c *CmdLineCmd) register_func(key string, val func()) {
+func (c *CmdLineCmd) register(key string, val Command) {
+	c.regs(key, val.Run, val.Help)
+}
+
+func (c *CmdLineCmd) register_func(key string, val func(), desc string) {
 	f := func(_ []string) error {
 		val()
 		return nil
 	}
-	c.keys = append(c.keys, key)
-	c.funcs[key] = f
+	c.regs(key, f, desc)
 }
 
 func (c *CmdLineCmd) Help() {
-	fmt.Printf("Commands: %s\n", strings.Join(c.keys, " "))
-	fmt.Printf("'cmd help' for help for specific command\n")
+	fmt.Printf("Usage of %s:\n", os.Args[0])
+	for cmd, desc := range c.help {
+		var help string
+		switch desc.(type) {
+		case string:
+			help = desc.(string)
+		case func() error:
+			help = desc.(func() string)()
+		}
+		fmt.Printf("\t%s - %s\n", cmd, help)
+	}
+}
+
+func (c *CmdLineCmd) alias(oldkey string, newkeys ...string) {
+	f, _ := c.get(oldkey)
+	for _, key := range newkeys {
+		c.funcs[key] = f
+	}
+	newkeys = append(newkeys, oldkey)
+	c.help[strings.Join(newkeys, " | ")] = c.help[oldkey]
 }
 
 func (c *CmdLineCmd) get(key string) (func([]string) error, bool) {
@@ -440,7 +461,10 @@ var (
 	cluster []*machine
 
 	// all the commands supported
-	commands = &CmdLineCmd{funcs: make(map[string]func([]string) error)}
+	commands = &CmdLineCmd{
+		funcs: make(map[string]func([]string) error),
+		help:  make(map[string]interface{}),
+	}
 )
 
 func (o *Opts) Clear() {
@@ -456,11 +480,11 @@ func New(cmd Command) Command {
 
 	opt.Bool("help", false, opt.Alias("h", "?"))
 
-	opt.StringVar(&opts.Connect, "connect", "", opt.Alias("c"), opt.Description("connect machine stderr and stdout to terminal"))
-	opt.StringVar(&opts.Type, "type", "", opt.Alias("t"), opt.Description("specify type of machine to run script or command on"))
-	opt.StringVar(&opts.Script, "script", "", opt.Alias("s"), opt.Description("specify script the script to run"))
+	opt.StringVar(&opts.Connect, "connect-stream", "", opt.Alias("c"), opt.Description("connect machine stderr and stdout to terminal"))
+	opt.StringVar(&opts.Type, "machine-type", "", opt.Alias("t"), opt.Description("specify type of machine to run script or command on"))
+	opt.StringVar(&opts.Script, "script-path", "", opt.Alias("s"), opt.Description("specify script the script to run"))
 	opt.StringVar(&opts.Command, "command", "", opt.Alias("cmd"), opt.Description("specify command the script to run"))
-	opt.StringVar(&opts.Name, "name", "", opt.Alias("n"), opt.Description("specify machine when executing on single machine"))
+	opt.StringVar(&opts.Name, "hostname", "", opt.Alias("n"), opt.Description("specify machine when executing on single machine"))
 
 	switch cmd.(type) {
 	case *SshCmd:
@@ -477,12 +501,12 @@ func New(cmd Command) Command {
 	return nil
 }
 
-func (v *VboxCmd) Help() {
-	return
+func (v *VboxCmd) Help() string {
+	return v.opt.Help()
 }
 
-func (v *SshCmd) Help() {
-	return
+func (v *SshCmd) Help() string {
+	return v.opt.Help()
 }
 
 func (v *VboxCmd) Run(args []string) error {
@@ -494,7 +518,7 @@ func (v *VboxCmd) Run(args []string) error {
 
 	if v.opt.Called("help") {
 		fmt.Fprintln(os.Stderr, v.opt.Help())
-		os.Exit(1)
+		return nil
 	}
 
 	vm := strings.Join(largs, " ")
@@ -521,7 +545,7 @@ func (v *SshCmd) Run(args []string) error {
 
 	if v.opt.Called("help") {
 		fmt.Fprintln(os.Stderr, v.opt.Help())
-		os.Exit(1)
+		return nil
 	}
 
 	// connect stdout and stderr to terminal
@@ -631,9 +655,12 @@ func main() {
 		return
 	}
 
-	commands.register_func("clear", clear)
-	commands.register_func("help", commands.Help)
-	commands.register_func("quit", clear)
+	commands.register_func("clear", clear, "Clear terminal screen")
+	commands.alias("clear", "cls")
+	commands.register_func("help", commands.Help, "Display this help message")
+	commands.alias("help", "h", "?")
+	commands.register_func("quit", func() { os.Exit(0) }, "Quit the repl shell")
+	commands.alias("quit", "q")
 	commands.register("ssh", New(&SshCmd{}))
 	commands.register("vbox", New(&VboxCmd{}))
 
@@ -643,8 +670,10 @@ func main() {
 		cmd, args := get_args(cmdline.Text())
 		if f, ok := commands.get(cmd); ok {
 			if err := f(args); err != nil {
-				log.Fatal(err)
+				fmt.Fprintln(os.Stderr, err)
 			}
+		} else if cmd != "" {
+			fmt.Printf("'%s': command not found\n", cmd)
 		}
 		prompt()
 	}
