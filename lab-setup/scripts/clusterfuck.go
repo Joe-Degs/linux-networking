@@ -7,6 +7,7 @@
 // sideline.
 package main
 
+//go:generate stringer -type=node_type,Op
 import (
 	"bufio"
 	"errors"
@@ -29,7 +30,6 @@ import (
 type (
 	// node_type represents the role of node a node in the cluster or
 	// it identifies what types of nodes to perform an operation on
-	//go:generate stringer -type=node_type
 	node_type uint8
 
 	// machine holds the hostname and files representing stdin, stdout and stdout of
@@ -53,7 +53,6 @@ type (
 	// dummy makes an io.Writer an io.ReadWriteCloser
 	dummy struct{ w io.Writer }
 
-	//go:generate stringer -type=Op
 	Op uint8
 
 	// A command is a command that can be executed

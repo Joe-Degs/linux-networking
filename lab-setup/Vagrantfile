@@ -8,11 +8,24 @@ Vagrant.configure("2") do |config|
   script = <<-SCRIPT
     sudo apt-get update
     sudo apt-get install curl tmux wget nano git -y
-    sudo swapoff -a
-    mkdir -p ~/k8s && cd ~/k8s
     wget -q \
        https://pkg.cfssl.org/R1.2/cfssl_linux-amd64 \
        https://pkg.cfssl.org/R1.2/cfssljson_linux-amd64
+
+    sudo bash -s <<EOF
+    sed -e '/^.*ubuntu-bionic.*/d' -i /etc/hosts
+    sed -i -e 's/#DNS=/DNS=8.8.8.8/' /etc/systemd/resolved.conf
+
+    # load a couple of necessary modules 
+    modprobe overlay
+    modprobe br_netfilter
+
+    # disable swaping
+    sed 's/#   /swap.*/#swap.img/' /etc/fstab
+    swapoff -a
+
+    service systemd-resolved restart
+    EOF
 
     chmod +x cfssl_linux-amd64 cfssljson_linux-amd64
     sudo mv cfssl_linux-amd64 /usr/local/bin/cfssl
@@ -28,10 +41,8 @@ Vagrant.configure("2") do |config|
       vbox.cpus = 2
       vbox.customize ["modifyvm", :id, "--nic2", "intnet", "--intnet2", "intnet1"]
     end
+    box.vm.provision "shell", inline: "#{script}"
     srv.vm.provision "shell", inline: <<-SHELL
-      sudo apt-get update
-      sudo apt-get install curl tmux wget nano git -y
-      sudo swapoff -a
       sudo /vagrant/scripts/hostips.sh
       sudo /vagrant/scripts/netconfig.sh
       sudo /vagrant/scripts/setup-haproxy.sh
