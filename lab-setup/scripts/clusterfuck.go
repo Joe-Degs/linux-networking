@@ -21,6 +21,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"text/tabwriter"
 
 	"github.com/DavidGamba/go-getoptions"
 	"github.com/mikkeloscar/sshconfig"
@@ -65,18 +66,24 @@ type (
 		Help() string
 	}
 
-	// the list command type. it lists things right
-	List struct {
-		args string
-	}
-
 	// vbox command options
 	Opts struct {
+
+		// for vbox and ssh
 		Connect string
 		Type    string
 		Script  string
 		Command string
 		Name    string
+
+		// for list
+		M bool
+	}
+
+	// the list command type. it lists things right
+	ListCmd struct {
+		opt  *getoptions.GetOpt
+		opts *Opts
 	}
 
 	// vboxmanage command executor
@@ -377,19 +384,6 @@ func script_path(name string) string {
 	return "/vagrant/" + name
 }
 
-func ListCommand(args string) List {
-	return List{args: args}
-}
-
-func (l List) Run() error {
-	fmt.Println(l.args)
-	return nil
-}
-
-func (l List) Help() {
-	log.Fatal("list command help!")
-}
-
 // execute's script/command on specified machine types
 func exec_on(kind node_type, c Cmd, args string) {
 	for _, node := range cluster {
@@ -467,11 +461,73 @@ var (
 	}
 )
 
+var tabby = new(tabwriter.Writer)
+
+type WriteFlusher interface {
+	io.Writer
+	Flush() error
+}
+
+func listerWithHeading(heads ...string) WriteFlusher {
+	w := tabby.Init(os.Stdout, 0, 8, 1, '\t', tabwriter.AlignRight)
+	fmt.Fprintf(w, strings.Join(heads, "\t"))
+	return w
+}
+
+func NewLister() *ListCmd {
+	var opts Opts
+	opt := getoptions.New()
+
+	opt.Bool("help", false, opt.Alias("h", "?"))
+
+	opt.BoolVar(&opts.M, "machines", false, opt.Alias("m"), opt.Description("list machines in cluster"))
+
+	return &ListCmd{
+		opts: &opts,
+		opt:  opt,
+	}
+	return nil
+}
+
+func (v *ListCmd) Run(args []string) error {
+	v.opts.Clear()
+	_, err := v.opt.Parse(args)
+	if err != nil {
+		return err
+	}
+
+	if v.opt.Called("help") {
+		fmt.Fprintln(os.Stderr, v.opt.Help())
+		return nil
+	}
+
+	if v.opts.M {
+		// list machines in cluster
+		w := listerWithHeading("Host", "HostName", "User", "Port\n")
+		fom := "%s\t%s\t%s\t%d\n"
+		for _, m := range cluster {
+			c := m.config
+			fmt.Fprintf(w, fom, strings.Join(c.Host, " "), c.HostName, c.User, c.Port)
+		}
+		return w.Flush()
+	}
+
+	return nil
+}
+
+func (v *ListCmd) Help() string {
+	return v.opt.Help()
+}
+
 func (o *Opts) Clear() {
+	// vbox and ssh
 	o.Type = ""
 	o.Command = ""
 	o.Script = ""
 	o.Connect = ""
+
+	// list
+	o.M = false
 }
 
 func New(cmd Command) Command {
@@ -589,6 +645,23 @@ func (v *SshCmd) Run(args []string) error {
 	return nil
 }
 
+func clear() {
+	var cmd string
+	if runtime.GOOS == "windows" {
+		cmd = "cmd /c cls"
+	} else if runtime.GOOS == "linux" {
+		cmd = "clear"
+	}
+	var c *exec.Cmd
+	if args := strings.Split(cmd, " "); len(args) > 1 {
+		c = exec.Command(args[0], args[1:]...)
+	} else {
+		c = exec.Command(cmd)
+	}
+	c.Stdout = os.Stdout
+	c.Run()
+}
+
 func main() {
 	flag.BoolVar(&debug, "v", false, "verbose output")
 	flag.StringVar(&list, "list", "", "specify comma separated list of nodes to read stdout and stderr to terminal")
@@ -629,28 +702,12 @@ func main() {
 		}
 	}
 
+	// display the clusterfuck prompt
 	prompt := func() {
 		fmt.Print(os.Args[0], "> ")
 	}
 
-	clear := func() {
-		var cmd string
-		if runtime.GOOS == "windows" {
-			cmd = "cmd /c cls"
-		} else if runtime.GOOS == "linux" {
-			cmd = "clear"
-		}
-
-		var c *exec.Cmd
-		if cm := strings.Split(cmd, " "); len(cm) > 1 {
-			c = exec.Command(cm[0], cm[1:]...)
-		} else {
-			c = exec.Command(cmd)
-		}
-		c.Stdout = os.Stdout
-		c.Run()
-	}
-
+	// split a command line argument into a clusterfuck (command, args) pair
 	get_args := func(s string) (cmd string, args []string) {
 		out := strings.Split(strings.TrimSpace(strings.ToLower(s)), " ")
 		cmd = out[0]
@@ -668,6 +725,7 @@ func main() {
 	commands.alias("quit", "q")
 	commands.register("ssh", New(&SshCmd{}))
 	commands.register("vbox", New(&VboxCmd{}))
+	commands.register("ls", NewLister())
 
 	cmdline := bufio.NewScanner(os.Stdin)
 	prompt()
@@ -678,8 +736,12 @@ func main() {
 				fmt.Fprintln(os.Stderr, err)
 			}
 		} else if cmd != "" {
-			fmt.Printf("'%s': command not found\n", cmd)
+			fmt.Fprintf(os.Stderr, "'%s': command not found\n", cmd)
 		}
 		prompt()
+	}
+
+	if err := cmdline.Err(); err != nil {
+		log.Fatal(err)
 	}
 }
