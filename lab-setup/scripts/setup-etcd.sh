@@ -11,11 +11,12 @@ get_ip(){
 }
 
 # configuring etcd on all controller nodes
-# mkdir -p /etc/etcd /var/lib/etcd
-# wget https://github.com/etcd-io/etcd/releases/download/v3.3.13/etcd-v3.3.13-linux-amd64.tar.gz
-# tar xvzf $SHARED_DIR/download/etcd-v3.3.13-linux-amd64.tar.gz
-# mv etcd-v3.3.13-linux-amd64/etcd* /usr/local/bin/
-(cd $CERTS_DIR && cp ca.pem kubernetes-key.pem kubernetes.pem /etc/etcd/)
+if [ ! -e /var/lib/etcd ]; then
+  mkdir -p /etc/etcd /var/lib/etcd
+  tar xvzf $SHARED_DIR/download/etcd-v3.3.13-linux-amd64.tar.gz
+  mv etcd-v3.3.13-linux-amd64/etcd* /usr/local/bin/
+  cp $CERTS_DIR/{ca.pem,kubernetes-key.pem,kubernetes.pem} /etc/etcd/
+fi
 
 IPA="$(get_ip master0)"
 IPB="$(get_ip master1)"
@@ -54,8 +55,5 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-fuser -k 2380/tcp
-fuser -k 2379/tcp
-systemctl daemon-reload
-# systemctl enable etcd
+systemctl enable etcd
 systemctl restart etcd

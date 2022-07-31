@@ -1,4 +1,4 @@
-cat >> /etc/netplan/99_$(hostname)_config.yaml <<EOF
+cat > /etc/netplan/99_$(hostname)_config.yaml <<EOF
 network:
   version: 2
   renderer: networkd
