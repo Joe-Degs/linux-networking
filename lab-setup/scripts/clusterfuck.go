@@ -636,12 +636,17 @@ func main() {
 	clear := func() {
 		var cmd string
 		if runtime.GOOS == "windows" {
-			cmd = "cls"
+			cmd = "cmd /c cls"
 		} else if runtime.GOOS == "linux" {
 			cmd = "clear"
 		}
-		log.Println("execing... ", cmd)
-		c := exec.Command(cmd)
+
+		var c *exec.Cmd
+		if cm := strings.Split(cmd, " "); len(cm) > 1 {
+			c = exec.Command(cm[0], cm[1:]...)
+		} else {
+			c = exec.Command(cmd)
+		}
 		c.Stdout = os.Stdout
 		c.Run()
 	}
